@@ -15,7 +15,7 @@ jobs:
   # Gitleaks (Secrets)
   # -------------------
   gitleaks:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -227,3 +227,4 @@ jobs:
         with:
           name: iast-logs
           path: webgoat-otel.log
+
