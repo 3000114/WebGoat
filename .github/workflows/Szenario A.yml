@@ -44,7 +44,7 @@ jobs:
   # Semgrep (SAST)
   # -------------------
   semgrep:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -73,7 +73,7 @@ jobs:
   # Trivy FS (SCA)
   # -------------------
   trivy:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -101,7 +101,7 @@ jobs:
   # ZAP Baseline Scan (DAST)
   # -------------------
   zap:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -142,7 +142,7 @@ jobs:
   # SonarQube Scan via Docker
   # -------------------
   sonar:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -197,7 +197,7 @@ jobs:
   # Optional IAST-light (OpenTelemetry)
   # -------------------
   iast:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -227,4 +227,5 @@ jobs:
         with:
           name: iast-logs
           path: webgoat-otel.log
+
 
