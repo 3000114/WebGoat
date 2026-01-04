@@ -34,7 +34,7 @@ jobs:
   # Runs on every push & PR
   # =========================
   sast:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -65,7 +65,7 @@ jobs:
   # Runs on every push & PR
   # =========================
   secrets:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -95,7 +95,7 @@ jobs:
   # Nightly only
   # =========================
   sca:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
 
     steps:
@@ -126,7 +126,7 @@ jobs:
   # Only on main / release
   # =========================
   dast:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: |
       github.ref == 'refs/heads/main' ||
       startsWith(github.ref, 'refs/heads/release/')
@@ -163,3 +163,4 @@ jobs:
 
       - name: Stop WebGoat
         run: docker rm -f webgoat || true
+
