@@ -51,7 +51,7 @@ jobs:
         run: |
           echo "Waiting for WebGoat on http://localhost:8080/WebGoat"
           for i in {1..40}; do
-            if curl -sSf http://localhost:8080/WebGoat > /dev/null; then
+            if curl -sSf http://localhost:8080/WebGoat/login > /dev/null; then
               echo "WebGoat is UP"
               exit 0
             fi
@@ -61,7 +61,7 @@ jobs:
           cat webgoat.log
           exit 1
 
-      - name: ZAP Baseline Scan (DAST trigger for IAST)
+      - name: ZAP Baseline Scan (DAST trigger)
         uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://localhost:8080/WebGoat
@@ -70,8 +70,8 @@ jobs:
           artifact_name: zap_webgoat_scan
           allow_issue_writing: true
 
-      - name: Upload OpenTelemetry Runtime Logs
+      - name: Upload Runtime Logs (IAST evidence)
         uses: actions/upload-artifact@v4
         with:
-          name: otel-webgoat-runtime-logs
+          name: webgoat-runtime-logs
           path: webgoat.log
