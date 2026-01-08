@@ -19,11 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - run: mkdir -p results/raw
+      - name: Prepare directories
+        run: mkdir -p results/raw
 
       - name: Run Gitleaks
         run: |
           docker run --rm \
+            --cpus="1" --memory="2g" \
             -v "$PWD:/src" \
             zricethezav/gitleaks detect \
               --source=/src \
@@ -31,11 +33,11 @@ jobs:
               --report-path /src/results/raw/gitleaks.json \
               --no-git || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Gitleaks report
+        uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: results/raw/gitleaks.json
-
 
   # -------------------
   # Semgrep (SAST)
@@ -45,11 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - run: mkdir -p results/raw
+      - name: Prepare directories
+        run: mkdir -p results/raw
 
       - name: Run Semgrep
         run: |
           docker run --rm \
+            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             returntocorp/semgrep:1.75.0 \
             semgrep scan --config=p/ci \
@@ -57,11 +61,11 @@ jobs:
               --output=/src/results/raw/semgrep.json \
               --metrics=off || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
           path: results/raw/semgrep.json
-
 
   # -------------------
   # Trivy FS (SCA)
@@ -71,11 +75,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - run: mkdir -p results/raw
+      - name: Prepare directories
+        run: mkdir -p results/raw
 
       - name: Run Trivy FS Scan
         run: |
           docker run --rm \
+            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             aquasec/trivy:0.49.1 \
             fs /src \
@@ -83,52 +89,39 @@ jobs:
               --format json \
               --output /src/results/raw/trivy-fs.json || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Trivy FS report
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
           path: results/raw/trivy-fs.json
 
-
   # -------------------
-  # DAST + IAST-light
+  # WebGoat Build + DAST + IAST-light
   # -------------------
-  zap-iast:
+  webgoat:
     runs-on: ubuntu-latest
-
+    needs: [gitleaks, semgrep, trivy]
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Java 17 (WebGoat compatible)
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
       - name: Build WebGoat
-        run: ./mvnw -B clean package -DskipTests
-
-      - name: Download OpenTelemetry Java Agent
         run: |
-          curl -L -o opentelemetry-javaagent.jar \
-            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+          ./mvnw -B clean package -DskipTests
 
-      - name: Start WebGoat with OpenTelemetry (IAST-light)
-        env:
-          OTEL_SERVICE_NAME: webgoat
-          OTEL_TRACES_EXPORTER: logging
-          OTEL_METRICS_EXPORTER: none
-          OTEL_LOGS_EXPORTER: none
-          OTEL_INSTRUMENTATION_JDBC_ENABLED: true
-          OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED: true
+      - name: Start WebGoat
         run: |
-          nohup java \
-            -javaagent:./opentelemetry-javaagent.jar \
-            -jar target/webgoat-*.jar \
-            > webgoat-otel.log 2>&1 &
-          echo $! > webgoat.pid
+          docker rm -f webgoat || true
+          docker run -d --name webgoat -p 8080:8080 webgoat/webgoat
 
       - name: Wait for WebGoat
         run: |
+          echo "Waiting for WebGoat on http://localhost:8080/WebGoat"
           for i in {1..40}; do
             if curl -sSf http://localhost:8080/WebGoat/login > /dev/null; then
               echo "WebGoat is UP"
@@ -137,10 +130,10 @@ jobs:
             sleep 5
           done
           echo "WebGoat failed to start"
-          cat webgoat-otel.log
           exit 1
 
-      - name: ZAP Baseline Scan (DAST trigger)
+      # ---- DAST (ZAP) ----
+      - name: ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://localhost:8080/WebGoat
@@ -149,9 +142,45 @@ jobs:
           artifact_name: zap-webgoat-report
           allow_issue_writing: true
 
-      - name: Upload IAST Runtime Logs
+      # ---- IAST-light (OpenTelemetry) ----
+      - name: Download OpenTelemetry Java Agent
+        run: |
+          curl -L -o opentelemetry-javaagent.jar \
+            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+
+      - name: Start WebGoat with OpenTelemetry Agent (IAST-light)
+        env:
+          OTEL_SERVICE_NAME: webgoat
+          OTEL_TRACES_EXPORTER: logging
+          OTEL_METRICS_EXPORTER: none
+          OTEL_LOGS_EXPORTER: none
+          OTEL_INSTRUMENTATION_JDBC_ENABLED: true
+          OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED: true
+        run: |
+          # Stop original WebGoat container to run instrumented version
+          docker rm -f webgoat || true
+          nohup java \
+            -javaagent:./opentelemetry-javaagent.jar \
+            -jar target/webgoat-*.jar \
+            > webgoat.log 2>&1 &
+          echo $! > webgoat.pid
+
+      - name: Wait for WebGoat IAST
+        run: |
+          echo "Waiting for WebGoat (IAST-light) on http://localhost:8080/WebGoat"
+          for i in {1..40}; do
+            if curl -sSf http://localhost:8080/WebGoat/login > /dev/null; then
+              echo "WebGoat is UP (IAST-light)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "WebGoat IAST failed to start"
+          cat webgoat.log
+          exit 1
+
+      - name: Upload Runtime Logs (IAST evidence)
         uses: actions/upload-artifact@v4
         with:
-          name: iast-runtime-logs
-          path: webgoat-otel.log
-
+          name: webgoat-runtime-logs
+          path: webgoat.log
