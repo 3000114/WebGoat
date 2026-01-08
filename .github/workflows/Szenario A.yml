@@ -1,4 +1,4 @@
-name: WebGoat Scenario A – Everything Parallel
+name: scenario-a-parallel-webgoat
 
 on:
   workflow_dispatch:
@@ -17,16 +17,12 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - uses: actions/checkout@v5
+      - run: mkdir -p results/raw
 
       - name: Run Gitleaks
         run: |
           docker run --rm \
-            --cpus="1" --memory="2g" \
             -v "$PWD:/src" \
             zricethezav/gitleaks detect \
               --source=/src \
@@ -34,11 +30,11 @@ jobs:
               --report-path /src/results/raw/gitleaks.json \
               --no-git || true
 
-      - name: Upload Gitleaks report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: results/raw/gitleaks.json
+          if-no-files-found: warn
 
   # -------------------
   # Semgrep (SAST)
@@ -46,28 +42,25 @@ jobs:
   semgrep:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - uses: actions/checkout@v5
+      - run: mkdir -p results/raw
 
       - name: Run Semgrep
         run: |
           docker run --rm \
-            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             returntocorp/semgrep:1.75.0 \
-            semgrep scan --config=p/ci \
+            semgrep scan \
+              --config=p/ci \
               --json \
               --output=/src/results/raw/semgrep.json \
               --metrics=off || true
 
-      - name: Upload Semgrep report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
           path: results/raw/semgrep.json
+          if-no-files-found: warn
 
   # -------------------
   # Trivy FS (SCA)
@@ -75,52 +68,46 @@ jobs:
   trivy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - uses: actions/checkout@v5
+      - run: mkdir -p results/raw
 
       - name: Run Trivy FS Scan
         run: |
           docker run --rm \
-            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             aquasec/trivy:0.49.1 \
-            fs /src --scanners vuln,misconfig \
+            fs /src \
+              --scanners vuln,misconfig \
               --format json \
               --output /src/results/raw/trivy-fs.json || true
 
-      - name: Upload Trivy FS report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
           path: results/raw/trivy-fs.json
+          if-no-files-found: warn
 
   # -------------------
-  # ZAP Baseline Scan (DAST)
+  # ZAP Baseline (DAST)
   # -------------------
   zap:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
-      - name: Start WebGoat with OpenTelemetry Agent (IAST-light)
+      - name: Start WebGoat
         run: |
           docker rm -f webgoat || true
-          docker run -d --name webgoat -p 8080:8080 -p 9090:9090 webgoat/webgoat
+          docker run -d --name webgoat -p 8080:8080 webgoat/webgoat
 
       - name: Wait for WebGoat
         run: |
           for i in {1..40}; do
             if curl -sSf http://localhost:8080/WebGoat/login > /dev/null; then
-              echo "WebGoat is UP"
               exit 0
             fi
             sleep 5
           done
-          echo "WebGoat failed to start"
           exit 1
 
       - name: ZAP Baseline Scan
@@ -132,54 +119,47 @@ jobs:
           artifact_name: zap_webgoat_scan
           allow_issue_writing: true
 
-      - name: Upload WebGoat Logs
-        uses: actions/upload-artifact@v4
+      - name: Upload Docker logs
+        if: always()
+        run: docker logs webgoat > webgoat.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: webgoat-runtime-logs
           path: webgoat.log
+          if-no-files-found: warn
 
   # -------------------
-  # SonarQube Scan via Docker
+  # SonarQube (SAST++)
   # -------------------
   sonar:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
-      - name: Start SonarQube Docker
+      - name: Start SonarQube
         run: |
           docker rm -f sonarqube || true
           docker run -d --name sonarqube -p 9000:9000 sonarqube:latest
-          echo "Waiting for SonarQube to start..."
-          for i in {1..30}; do
-            if curl -sSf http://localhost:9000 > /dev/null; then
-              echo "SonarQube is UP"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "SonarQube failed to start"
-          exit 1
+          sleep 40
 
-      - name: Set up JDK 17
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
-      - name: Cache Maven packages
+      - name: Cache Maven
         uses: actions/cache@v3
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
 
       - name: Build WebGoat
-        run: ./mvnw clean package -DskipTests
+        run: ./mvnw clean package -DskipTests || true
 
-      - name: SonarQube Analysis
+      - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -191,41 +171,5 @@ jobs:
             -Dsonar.java.binaries=target/classes
 
       - name: Stop SonarQube
+        if: always()
         run: docker rm -f sonarqube || true
-
-  # -------------------
-  # Optional IAST-light (OpenTelemetry)
-  # -------------------
-  iast:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download OpenTelemetry Java Agent
-        run: |
-          curl -L -o opentelemetry-javaagent.jar \
-            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
-
-      - name: Start WebGoat with OpenTelemetry
-        env:
-          OTEL_SERVICE_NAME: webgoat
-          OTEL_TRACES_EXPORTER: logging
-          OTEL_METRICS_EXPORTER: none
-          OTEL_LOGS_EXPORTER: none
-          OTEL_INSTRUMENTATION_JDBC_ENABLED: true
-          OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED: true
-        run: |
-          nohup java \
-            -javaagent:./opentelemetry-javaagent.jar \
-            -jar target/webgoat-*.jar \
-            > webgoat-otel.log 2>&1 &
-          echo $! > webgoat-otel.pid
-
-      - name: Upload IAST logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: iast-logs
-          path: webgoat-otel.log
-
-
