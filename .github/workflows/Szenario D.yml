@@ -1,4 +1,4 @@
-name: WebGoat – Scenario D (Risk-Based Triggers)
+name: scenario-d-risk-based-webgoat
 
 on:
   # ------------------------
@@ -16,7 +16,7 @@ on:
       - "pom.xml"
 
   # ------------------------
-  # Nightly scan → SCA
+  # Nightly scan → SCA only
   # ------------------------
   schedule:
     - cron: "0 2 * * *"   # every night at 02:00 UTC
@@ -31,14 +31,14 @@ jobs:
 
   # =========================
   # SAST – Semgrep
-  # Runs on every push & PR
+  # Push + PR only
   # =========================
   sast:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results
         run: mkdir -p results/sast
@@ -60,16 +60,17 @@ jobs:
           name: semgrep-report
           path: results/sast/semgrep.json
 
+
   # =========================
   # Secrets – Gitleaks
-  # Runs on every push & PR
+  # Push + PR only
   # =========================
   secrets:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results
         run: mkdir -p results/secrets
@@ -90,17 +91,17 @@ jobs:
           name: gitleaks-report
           path: results/secrets/gitleaks.json
 
+
   # =========================
   # SCA – Trivy FS
-  # Nightly only
+  # Nightly ONLY
   # =========================
   sca:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results
         run: mkdir -p results/sca
@@ -121,15 +122,17 @@ jobs:
           name: trivy-sca-report
           path: results/sca/trivy.json
 
+
   # =========================
   # DAST – OWASP ZAP
-  # Only on main / release
+  # Main / Release branches only
   # =========================
   dast:
     runs-on: ubuntu-latest
     if: |
-      github.ref == 'refs/heads/main' ||
-      startsWith(github.ref, 'refs/heads/release/')
+      github.event_name != 'schedule' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
 
     steps:
       - name: Start WebGoat
@@ -138,7 +141,6 @@ jobs:
           docker run -d \
             --name webgoat \
             -p 8080:8080 \
-            -p 9090:9090 \
             webgoat/webgoat
 
       - name: Wait for WebGoat
@@ -153,7 +155,7 @@ jobs:
           docker logs webgoat
           exit 1
 
-      - name: ZAP Baseline Scan
+      - name: ZAP Baseline Scan (non-blocking)
         uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://localhost:8080/WebGoat
@@ -163,4 +165,3 @@ jobs:
 
       - name: Stop WebGoat
         run: docker rm -f webgoat || true
-
