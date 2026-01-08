@@ -19,13 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - run: mkdir -p results/raw
 
       - name: Run Gitleaks
         run: |
           docker run --rm \
-            --cpus="1" --memory="2g" \
             -v "$PWD:/src" \
             zricethezav/gitleaks detect \
               --source=/src \
@@ -33,8 +31,7 @@ jobs:
               --report-path /src/results/raw/gitleaks.json \
               --no-git || true
 
-      - name: Upload Gitleaks report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: results/raw/gitleaks.json
@@ -48,13 +45,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - run: mkdir -p results/raw
 
       - name: Run Semgrep
         run: |
           docker run --rm \
-            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             returntocorp/semgrep:1.75.0 \
             semgrep scan --config=p/ci \
@@ -62,8 +57,7 @@ jobs:
               --output=/src/results/raw/semgrep.json \
               --metrics=off || true
 
-      - name: Upload Semgrep report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
           path: results/raw/semgrep.json
@@ -77,13 +71,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Prepare directories
-        run: mkdir -p results/raw
+      - run: mkdir -p results/raw
 
       - name: Run Trivy FS Scan
         run: |
           docker run --rm \
-            --cpus="2" --memory="4g" \
             -v "$PWD:/src" \
             aquasec/trivy:0.49.1 \
             fs /src \
@@ -91,22 +83,22 @@ jobs:
               --format json \
               --output /src/results/raw/trivy-fs.json || true
 
-      - name: Upload Trivy FS report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
           path: results/raw/trivy-fs.json
 
 
   # -------------------
-  # ZAP (DAST) + IAST-light (OpenTelemetry)
+  # DAST + IAST-light
   # -------------------
   zap-iast:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Java 17
+      - name: Set up Java 17 (WebGoat compatible)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -162,3 +154,4 @@ jobs:
         with:
           name: iast-runtime-logs
           path: webgoat-otel.log
+
