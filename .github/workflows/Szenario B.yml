@@ -1,4 +1,4 @@
-name: WebGoat – Scenario B (Shift-Left)
+name: scenario-b-shift-left-webgoat
 
 on:
   workflow_dispatch:
@@ -18,8 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results directory
         run: mkdir -p results/sast
@@ -40,6 +39,7 @@ jobs:
           name: semgrep-report
           path: results/sast/semgrep.json
 
+
   # =========================
   # 2. SCA – Trivy FS
   # =========================
@@ -48,8 +48,7 @@ jobs:
     needs: sast
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results directory
         run: mkdir -p results/sca
@@ -61,6 +60,7 @@ jobs:
             aquasec/trivy:0.49.1 \
             fs /src \
               --scanners vuln,misconfig \
+              --severity CRITICAL,HIGH \
               --format json \
               --output /src/results/sca/trivy-fs.json
 
@@ -70,6 +70,7 @@ jobs:
           name: trivy-fs-report
           path: results/sca/trivy-fs.json
 
+
   # =========================
   # 3. Secrets – Gitleaks
   # =========================
@@ -78,13 +79,12 @@ jobs:
     needs: sca
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Prepare results directory
         run: mkdir -p results/secrets
 
-      - name: Run Gitleaks
+      - name: Run Gitleaks (Secrets Scan)
         run: |
           docker run --rm \
             -v "$PWD:/src" \
@@ -100,6 +100,7 @@ jobs:
           name: gitleaks-report
           path: results/secrets/gitleaks.json
 
+
   # =========================
   # 4. DAST – OWASP ZAP
   # =========================
@@ -108,13 +109,12 @@ jobs:
     needs: secrets
 
     steps:
-      - name: Start WebGoat (Docker)
+      - name: Start WebGoat
         run: |
           docker rm -f webgoat || true
           docker run -d \
             --name webgoat \
             -p 8080:8080 \
-            -p 9090:9090 \
             webgoat/webgoat
 
       - name: Wait for WebGoat
@@ -141,49 +141,3 @@ jobs:
 
       - name: Stop WebGoat
         run: docker rm -f webgoat || true
-
-  # =========================
-  # 5. IAST (optional, post-DAST)
-  # =========================
-  iast:
-    runs-on: ubuntu-latest
-    needs: dast
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download OpenTelemetry Java Agent
-        run: |
-          curl -L -o opentelemetry-javaagent.jar \
-            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
-
-      - name: Build WebGoat
-        run: ./mvnw -B clean package -DskipTests
-
-      - name: Start WebGoat with OpenTelemetry (IAST-light)
-        env:
-          OTEL_SERVICE_NAME: webgoat
-          OTEL_TRACES_EXPORTER: logging
-          OTEL_METRICS_EXPORTER: none
-          OTEL_LOGS_EXPORTER: none
-          OTEL_INSTRUMENTATION_JDBC_ENABLED: true
-          OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED: true
-        run: |
-          nohup java \
-            -javaagent:./opentelemetry-javaagent.jar \
-            -jar target/webgoat-*.jar \
-            > webgoat-iast.log 2>&1 &
-          echo $! > webgoat-iast.pid
-
-      - name: Run basic runtime interaction
-        run: |
-          sleep 15
-          curl -s http://localhost:8080/WebGoat/login || true
-
-      - name: Upload IAST logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: iast-runtime-logs
-          path: webgoat-iast.log
-
