@@ -1,5 +1,9 @@
-name: scenario-c-fail-fast-webgoat
-on: [workflow_dispatch, push, pull_request]
+name: WebGoat – Scenario C (Fail-Fast)
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
 
 permissions:
   contents: read
@@ -7,49 +11,178 @@ permissions:
 
 jobs:
 
-  semgrep:
-    runs-on: ubuntu-latest
+  # =========================
+  # 1. SAST – Semgrep
+  # =========================
+  sast:
+    runs-on: self-hosted
+
     steps:
-      - uses: actions/checkout@v5
-      - run: mkdir -p results/sast
-      - run: |
-          docker run --rm -v "$PWD:/src" returntocorp/semgrep:1.75.0 \
-            semgrep scan --config=p/ci \
-            --json --metrics=off \
-            --output=/src/results/sast/semgrep.json || true
-      - uses: actions/upload-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare results
+        run: mkdir -p results/sast
+
+      - name: Run Semgrep (SAST)
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            returntocorp/semgrep:1.75.0 \
+            semgrep scan \
+              --config=p/ci \
+              --json \
+              --output=/src/results/sast/semgrep.json \
+              --metrics=off || true
+
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
           path: results/sast/semgrep.json
-      - run: |
-          jq '[.results[] | select(.extra.severity=="CRITICAL")] | length' \
-            results/sast/semgrep.json | grep -q '^0$'
 
-  gitleaks:
-    runs-on: ubuntu-latest
-    needs: semgrep
+  # =========================
+  # 2. Fail-Fast Check (Critical SAST)
+  # =========================
+  check_critical_sast:
+    runs-on: self-hosted
+    needs: sast
+
     steps:
-      - uses: actions/checkout@v5
-      - run: mkdir -p results/secrets
-      - run: |
-          docker run --rm -v "$PWD:/src" zricethezav/gitleaks detect \
-            --source=/src --no-git \
-            --report-format json \
-            --report-path /src/results/secrets/gitleaks.json || true
-      - uses: actions/upload-artifact@v4
+      - name: Check for CRITICAL findings (Semgrep)
+        run: |
+          CRITICAL=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' results/sast/semgrep.json)
+          echo "Critical findings: $CRITICAL"
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ Critical SAST findings detected. Aborting pipeline."
+            exit 1
+          fi
+
+  # =========================
+  # 3. Secrets – Gitleaks
+  # =========================
+  secrets:
+    runs-on: self-hosted
+    needs: check_critical_sast
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare results
+        run: mkdir -p results/secrets
+
+      - name: Run Gitleaks
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            zricethezav/gitleaks detect \
+              --source=/src \
+              --report-format json \
+              --report-path /src/results/secrets/gitleaks.json \
+              --no-git || true
+
+      - name: Upload Gitleaks report
+        uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: results/secrets/gitleaks.json
-      - run: jq 'length == 0' results/secrets/gitleaks.json
 
-  dast:
-    runs-on: ubuntu-latest
-    needs: gitleaks
+  # =========================
+  # 4. Fail-Fast Check (Secrets)
+  # =========================
+  check_critical_secrets:
+    runs-on: self-hosted
+    needs: secrets
+
     steps:
-      - run: docker run -d -p 8080:8080 --name webgoat webgoat/webgoat
-      - run: sleep 30
-      - uses: zaproxy/action-baseline@v0.15.0
+      - name: Abort on secret findings
+        run: |
+          COUNT=$(jq '. | length' results/secrets/gitleaks.json)
+          echo "Secrets found: $COUNT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "❌ Secrets detected. Aborting pipeline."
+            exit 1
+          fi
+
+  # =========================
+  # 5. DAST – OWASP ZAP
+  # =========================
+  dast:
+    runs-on: self-hosted
+    needs: check_critical_secrets
+
+    steps:
+      - name: Start WebGoat
+        run: |
+          docker rm -f webgoat || true
+          docker run -d \
+            --name webgoat \
+            -p 8080:8080 \
+            -p 9090:9090 \
+            webgoat/webgoat
+
+      - name: Wait for WebGoat
+        run: |
+          for i in {1..40}; do
+            if curl -sSf http://localhost:8080/WebGoat/login > /dev/null; then
+              echo "WebGoat is UP"
+              exit 0
+            fi
+            sleep 5
+          done
+          docker logs webgoat
+          exit 1
+
+      - name: ZAP Baseline Scan (DAST)
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://localhost:8080/WebGoat
-          cmd_options: "-a"
+          docker_name: ghcr.io/zaproxy/zaproxy:stable
           fail_action: true
+          artifact_name: zap-webgoat-report
+
+      - name: Stop WebGoat
+        run: docker rm -f webgoat || true
+
+  # =========================
+  # 6. IAST (only if everything is clean)
+  # =========================
+  iast:
+    runs-on: self-hosted
+    needs: dast
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download OpenTelemetry Java Agent
+        run: |
+          curl -L -o opentelemetry-javaagent.jar \
+            https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+
+      - name: Build WebGoat
+        run: ./mvnw -B clean package -DskipTests
+
+      - name: Start WebGoat with IAST-light
+        env:
+          OTEL_SERVICE_NAME: webgoat
+          OTEL_TRACES_EXPORTER: logging
+          OTEL_METRICS_EXPORTER: none
+        run: |
+          nohup java \
+            -javaagent:./opentelemetry-javaagent.jar \
+            -jar target/webgoat-*.jar \
+            > webgoat-iast.log 2>&1 &
+          echo $! > webgoat.pid
+
+      - name: Trigger runtime traffic
+        run: |
+          sleep 15
+          curl -s http://localhost:8080/WebGoat/login || true
+
+      - name: Upload IAST logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: iast-runtime-logs
+          path: webgoat-iast.log
